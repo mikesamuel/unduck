@@ -1,8 +1,8 @@
-# Ducks make everything better
+# How to build castles out of ducks
 
-Easily upgrade duck types to real types.
+by easily upgrading bags of properties to instances of classes.
 
-## Problem
+## Problem: Ducks can be hard to juggle
 
 JavaScript provides two main ways to represent structured data.
 
@@ -27,6 +27,9 @@ but it is easier to *create* a bag of properties.
 Some frameworks define APIs in terms of bags of properties:
 *  [MongoDB's query language][mongo-query]: `db.foo.findAndModify({query: {_id: 123, available: {$gt: 0}}})`
 *  [Babel AST builders][babel-builders] produce values like `{ type: 'BinaryExpression', operator: '+', ... }`
+*  [sanitize-html][] takes policy objects like `{ allowedTags: [ 'b', 'i' ], ... }`
+*  [hapi][] uses routing rules like `{ method: 'GET', path: '/', config: ... }`
+*  Many APIs document configuration and option bundles in JavaScript object syntax.
 
 Classes provide a natural place to check invariants, and work with
 `instanceof` to provide easy *is-a* checks.
@@ -350,3 +353,5 @@ As noted before, without rewriting code to call the appropriate
 [chick]: https://unicode.org/emoji/charts/full-emoji-list.html#1f425
 [contract type]: https://github.com/WICG/trusted-types#the-problem
 [trust boundary]: https://en.wikipedia.org/wiki/Trust_boundary
+[sanitize-html]: https://www.npmjs.com/package/sanitize-html
+[hapi]: https://hapijs.com/
