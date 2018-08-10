@@ -142,6 +142,9 @@ called *unduck*, might:
 
 ## Duck calls
 
+First we need to put the information that TypeScript uses to identify
+problems with `interface`s in a form that we can use in JavaScript.
+
 Below we will use &#x1F425; as a shorthand for *from duck* or
 *deduck*.  (&#x1F425; is actually ["front-Facing Baby Chick"][chick]
 but the author thinks it looks like a duckling and, more importantly,
