@@ -14,7 +14,7 @@ class Point {
     this.y = y;
   }
 }
-let myInstance = new MyType({ x: 1, y: 2 });
+let myInstance = new Point({ x: 1, y: 2 });
 
 
 // Bags of Properties
@@ -28,12 +28,12 @@ Some frameworks define APIs in terms of bags of properties:
 *  [MongoDB's query language][mongo-query]: `db.foo.findAndModify({query: {_id: 123, available: {$gt: 0}}})`
 *  [Babel AST builders][babel-builders] produce values like `{ type: 'BinaryExpression', operator: '+', ... }`
 
-Classes provide a natural place to check invariants, and provide
-reliable *is-a* checks.
+Classes provide a natural place to check invariants, and work with
+`instanceof` to provide easy *is-a* checks.
 
 Bags of properties are hard to check early, and [JSON object forgery][]
-attacks exploit the fact that user code has not endorsed the bag as
-being appropriate to use in a particular way.
+attacks exploit the fact that libraries can't rely on user code to
+endorse the bag as being appropriate to use in a particular way.
 
 > JSON.parse makes it easy to unintentionally turn untrustworthy
 > strings into untrustworthy objects which has led to problems when
@@ -44,7 +44,7 @@ being appropriate to use in a particular way.
 >
 > duck typing is a terrible basis for authorization decisions
 
-This proposal seeks to bridge creation of duck typed values with class
+This proposal seeks to bridge bags of properties with class
 types so that it is convenient to create instances of well-defined
 classes making it more transparent to consumers of the object how
 to use them safely.
@@ -91,9 +91,13 @@ that merges, combines, or uses properties.
 
 ### Duck typing
 
-TypeScript lets us express these relationships with [index types][]
-and [literal types][].
+Hereafter, "duck type" refers to these informal types.  Note: this is a
+narrower definition than readers may be familiar with: a type
+defined based on the properties and methods it provides insetad of
+the constructor used to create values or prototypes.
 
+TypeScript lets us bring duck types into the type system with [index
+types][] and [literal types][].
 
 ```ts
 interface Message {
@@ -115,28 +119,31 @@ interface TypedContent {
 }
 ```
 
-Given a description like this, TypeScript can look at `let x: T = { key: value }`
-expression and decide whether `{ key: value }` is really a `T`.
+Given a description like this, TypeScript can look at
+`let x: T = { key: value }` expression and decide whether
+`{ key: value }` is really a `T`.
 
-It would be a burden for many projects to switch to typescript though and add
-the right `: T` everywhere they use `{ ... }` to create an *Object*.
+Switching to typescript is not easy though, nor is adding
+the right `: T` to every creation of an *Object* via `{ ... }`.
 
 The rest of this document explains how an operator, tentatively
-called *autoduck*, might:
+called *unduck*, might:
 
-*  Provide a way to collect type descriptions
-*  Pick an appropriate class type given a bag of properties.
-*  Produce `class` instances from a bag of properties.
-*  Distinguish between bags from an external source and internal bags.
-*  Scope well -- not assume that all modules might construct all duckable types.
+*  Collect type descriptions like the `interface`s above,
+*  Pick an appropriate class type given a bag of properties,
+*  Assemble arguments to the class's constructor from the bag of properties,
+*  Distinguish between bags from an external source
+   and bags created by trusted user code,
+*  Respect scopes by not assuming that all modules are interested in
+   constructing all duckable types.
 
 ## Design sketch
 
-We need a way to refer to duck typing so we can declare types, and convert between
-bags of properties and `class` type instances.
+We need a way to refer to duck typing so we can declare types, and
+convert between bags of properties and `class` type instances.
 
-Below we will use &#x1F425; as a shorthand for *new duck* or
-*autoduck*.  (&#x1F425; is actually ["front-Facing Baby Chick"][chick]
+Below we will use &#x1F425; as a shorthand for *from duck* or
+*deduck*.  (&#x1F425; is actually ["front-Facing Baby Chick"][chick]
 but the author thinks it looks like a duckling and, more importantly,
 is more adorable than &#x1F986;.)
 
@@ -173,7 +180,7 @@ let 🐥 = global.🐥;
 ```
 
 Duck property descriptors can also specify:
-*  Whether to recursively autoduck the property value if an object.
+*  Whether to recursively unduck the property value if it is an object.
    Defaults to true.
 *  A custom value converter which takes `(value, notApplicable)` and
    returns `notApplicable` to indicate that the type is not applicable.
@@ -185,13 +192,14 @@ similar information.
 
 ### Duck ponds
 
-The code above creates a local variable, &#x1F425;,
-by deriving from a global &#x1F425;, and registers
-a type relationship with it.
+A *duck pond* is a set of type relationships.
 
-A *duck pond* is a set of type relationships.  By assigned to
-&#x1F425; in a module scope, the developer can add type relationships
-which will affect calls to &#x1F425;(...) in that module.
+The code above creates a local variable, &#x1F425;, by deriving from a
+global &#x1F425;, and registers a type relationship with it.
+
+By assigned to &#x1F425; in a module scope, the developer can add type
+relationships which will affect calls to &#x1F425;(...) in that
+module.
 
 ### The duck hunt algorithm
 
@@ -199,7 +207,7 @@ The important thing about a duck pond is that we can derive from it
 a decision tree to relate a bag of properties to a class instance,
 and derive arguments to that class's constructor.
 
-Given a bag of properties, and a pond:
+The duck hunt algorithm takes a bag of properties and a pond, then:
 
 1.  Applies a decision tree to narrow the set of applicable type relationships
     to the maximal subset of the pond such that the bag of properties
@@ -217,6 +225,8 @@ Given a bag of properties, and a pond:
 1.  Return the result of applying the applicable type relationship's
     `classType`'s constructor to the sole `toConstructorArguments` result.
 
+
+
 ### How to make ducks?
 
 To turn a nested bag of properties into a value, simply initialize
@@ -225,6 +235,7 @@ your duck pond as above, and then call the autoduck operator.
 ```js
 import * as ShapesLibrary from 'ShapesLibrary';
 
+// Maybe libraries provide a way to register their duckable types.
 let 🐥 = ShapesLibrary.fillPond(global.🐥);
 
 let myTriangle = 🐥({
@@ -320,15 +331,14 @@ to happen piecemeal:
 
 1.  Developers pick an API that takes bags of properties.
 1.  Configure it to require class types as inputs, or to report when they're not.
-1.  Put &#x1F425; around object constructors, run tests, and repeat until tests run green.
-1.  Move into production.
+1.  Put &#x1F425;(...) around object constructors, run tests, tweak, and repeat until tests run green.
+1.  Repeat with another API that ducks.
 
 As noted before, without rewriting code to call the appropriate
 `new ClassName`, maintainers and security auditors get the benefits of:
 
 *  constructors that check type invariants at `new` time,
-*  easier reasoning about which object originate inside which trust boundaries.
-
+*  having a place to put code that coerces untrusted structured inputs to trustworthy structured values.
 
 
 [JSON object forgery]: https://medium.com/@mikesamuel/protecting-against-object-forgery-2d0fd930a7a9
