@@ -140,10 +140,7 @@ called *unduck*, might:
 *  Respect scopes by not assuming that all modules are interested in
    constructing all duckable types.
 
-## Design sketch
-
-We need a way to refer to duck typing so we can declare types, and
-convert between bags of properties and `class` type instances.
+## Duck calls
 
 Below we will use &#x1F425; as a shorthand for *from duck* or
 *deduck*.  (&#x1F425; is actually ["front-Facing Baby Chick"][chick]
@@ -193,7 +190,7 @@ Duck property descriptors can also specify:
 Babel internally uses [type definitions][babel-defn] that contain
 similar information.
 
-### Duck ponds
+## Duck ponds
 
 A *duck pond* is a set of type relationships.
 
@@ -204,7 +201,7 @@ By assigned to &#x1F425; in a module scope, the developer can add type
 relationships which will affect calls to &#x1F425;(...) in that
 module.
 
-### The duck hunt algorithm
+## The duck hunt algorithm
 
 The important thing about a duck pond is that we can derive from it
 a decision tree to relate a bag of properties to a class instance,
@@ -228,9 +225,7 @@ The duck hunt algorithm takes a bag of properties and a pond, then:
 1.  Return the result of applying the applicable type relationship's
     `classType`'s constructor to the sole `toConstructorArguments` result.
 
-
-
-### How to make ducks?
+## How to make ducks?
 
 To turn a nested bag of properties into a value, simply initialize
 your duck pond as above, and then call the autoduck operator.
@@ -291,7 +286,7 @@ checks happen early and that downstream code can use `instanceof` to
 check their inputs, especially those values that imply that a property
 is safe to use in a sensitive context.
 
-### Danger duck
+## Danger duck
 
 Application code shouldn't naively convert any bag of properties to an
 object.  "[JSON object forgery][]" (mentioned previously) explains why not.
@@ -327,7 +322,7 @@ Either, if named consistently, make it easy to enumerate calls that might need a
 ]
 ```
 
-### Duck Migration
+## Duck Migration
 
 Given a codebase that uses bags of properties extensively, I might expect migration
 to happen piecemeal:
