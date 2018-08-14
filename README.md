@@ -140,7 +140,7 @@ called *unduck*, might:
 *  Respect scopes by not assuming that all modules are interested in
    constructing all duckable types.
 
-## Design sketch
+## Ducking Syntax
 
 We need a way to refer to duck typing so we can declare types, and
 convert between bags of properties and `class` type instances.
@@ -185,10 +185,9 @@ let 🐥 = global.🐥;
 Duck property descriptors can also specify:
 *  Whether to recursively unduck the property value if it is an object.
    Defaults to true.
-*  A custom value converter which takes `(value, notApplicable)` and
-   returns `notApplicable` to indicate that the type is not applicable.
+*  A custom value converter which takes `(value, trusted, notApplicable)`
+   and returns `notApplicable` to indicate that the type is not applicable.
    See the duck hunt algorithm below.
-*  Whether the value is *innocuous*.  See danger duck below.
 
 Babel internally uses [type definitions][babel-defn] that contain
 similar information.
@@ -220,6 +219,9 @@ The duck hunt algorithm takes a bag of properties and a pond, then:
        (See `value` in the property descriptor above),
     *  has no property whose value that does not pass a corresponding
        type guard.
+1.  For any properties that are recursively deduckable by any applicable type
+    relationship, recursively deduck them.  If any is reference identical to an
+    object that is still in progress, fail.
 1.  Call `toConstructorArguments` for each applicable type relationship.
 1.  Await all the results from `toConstructorArguments`.
     For each, if the result is not an array, then remove the type relationship

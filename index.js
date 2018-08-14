@@ -21,17 +21,22 @@
 
 const { isArray } = Array;
 const {
+  assign,
   getOwnPropertyNames,
   getOwnPropertySymbols,
-  hasOwnProperty,
   setPrototypeOf,
 } = Object;
 
+const hasOwn = Function.prototype.call.bind(Object.hasOwnProperty);
 
 /** A breadcrumb used to identify object graph cycles. */
 const IN_PROGRESS_BREADCRUMB = {};
 
 class DuckError extends TypeError {
+  constructor(...args) {
+    super(...args);
+    this.name = this.constructor.name;
+  }
 }
 
 class MissingDuckError extends DuckError {
@@ -50,7 +55,6 @@ function processor(trusted, root, userContext) {
   // used to detect object graph cycles and avoid multiply unducking
   // the same value.
   const unduckingMap = new Map();
-  return process; // eslint-disable-line no-use-before-define
 
   /**
    * Produces a class type instance given a bag of properties.
@@ -72,217 +76,252 @@ function processor(trusted, root, userContext) {
     }
     unduckingMap.set(x, IN_PROGRESS_BREADCRUMB);
 
-    const xIsArray = isArray(x);
     let result = null;
-    if (xIsArray) {
-      // For arrays, we recursively process everything.
-      // We create a this-realm array.
-      result = [];
-
-      for (let stringKeys = getOwnPropertyNames(x),
-        i = 0, n = stringKeys.length;
-        i < n; ++i) {
-        // TODO: is for(...in...) loop more efficient for long arrays?
-        // TODO: do we even care about holes and non-index keys?
-        const key = stringKeys[i];
-        if (key !== '__proto__' && key !== 'length') {
-          // TODO: might setting length fill in holes.  If not, can skip check.
-          result[key] = process(x[key]);
-        }
-      }
-      for (let symbolKeys = getOwnPropertySymbols(x),
-        i = 0, n = symbolKeys.length;
-        i < n; ++i) {
-        const key = symbolKeys[i];
-        result[key] = process(x[key]);
-      }
+    if (isArray(x)) {
+      // eslint-disable-next-line no-use-before-define
+      result = processArray(x);
     } else {
-      // Use a temporary object so we don't multiply read fields.
-      const scratchSpace = {};
-      setPrototypeOf(scratchSpace, null);
-      for (let stringKeys = getOwnPropertyNames(x),
-        i = 0, n = stringKeys.length;
-        i < n; ++i) {
-        const key = stringKeys[i];
-        if (key !== '__proto__') {
-          // HACK: could fall back to Object.defineProperty
-          // when key === '__proto__'
-          scratchSpace[key] = x[key];
-        }
-      }
-      for (let symbolKeys = getOwnPropertySymbols(x),
-        i = 0, n = symbolKeys.length;
-        i < n; ++i) {
-        const key = symbolKeys[i];
-        scratchSpace[key] = x[key];
-      }
-
-      const node = root.duckHunt(scratchSpace, process);
-      if (node.count === 1) {
-        // Fast tack
-        const duckType = node.types().next().value;
-        const { recurseToKeys } = duckType;
-        for (let i = 0, n = recurseToKeys.length; i < n; ++i) {
-          const recKey = recurseToKeys[i];
-          if (recKey in scratchSpace) {
-            scratchSpace[recKey] = process(scratchSpace[recKey]);
-          }
-        }
-        const { convertKeys } = duckType;
-        const notApplicable = {};
-        for (let i = 0, n = convertKeys.length; i < n; ++i) {
-          const key = convertKeys[i];
-          if (key in scratchSpace) {
-            const converted = duckType.properties[key].convert(
-              scratchSpace[key], trusted, userContext, notApplicable);
-            if (converted === notApplicable) {
-              throw new MissingDuckError(
-                `Failed to convert property ${ key } using type ${
-                  duckType.classType.name }`);
-            }
-            scratchSpace[key] = converted;
-          }
-        }
-        const { toConstructorArguments } = duckType;
-        const args = toConstructorArguments(scratchSpace, userContext, trusted);
-        if (!isArray(args)) {
-          throw new MissingDuckError(
-            `Duck hunt could not compute arguments to ${ duckType.classType.name }`);
-        }
-        const ClassType = duckType.classType;
-        result = new ClassType(...args);
-      } else {
-        const { applicableConstructorArgs, applicableDuckType } =
-          // Try without collecting error trace.
-          tentativelyApplyDuckTypes(node, scratchSpace, false);
-        if (!applicableConstructorArgs) {
-          // TODO: map node.types() to type names.
-          // TODO: use suppressed errors.
-          throw new MissingDuckError({
-            errorMessage: null,
-            toString() {
-              if (this.errorMessage === null) {
-                // Redo with the extra work to collect error trace.
-                const { errorMessage } = tentativelyApplyDuckTypes(
-                  node, scratchSpace, true);
-                this.errorMessage = errorMessage ||
-                  `Failed to compute constructor arguments for [${
-                    Array.from(node.types()).map((duckType) => duckType.classType.name)
-                  }]`;
-              }
-              return this.errorMessage;
-            },
-          });
-        }
-        for (let i = 0, n = applicableDuckType.recurseToKeys.length; i < n; ++i) {
-          const recKey = applicableDuckType.recurseToKeys[i];
-          if (recKey in scratchSpace) {
-            scratchSpace[recKey] = process(scratchSpace[recKey]);
-          }
-        }
-        const ClassType = applicableDuckType.classType;
-        result = new ClassType(...applicableConstructorArgs);
-      }
+      // eslint-disable-next-line no-use-before-define
+      result = processPojo(x);
     }
     unduckingMap.set(x, result);
     return result;
   }
 
-  function tentativelyApplyDuckTypes(node, scratchSpace, collectErrorTrace) {
+  /**
+   * Once we have a candidate set of applicable types, figure out which
+   * is applicable, and what arguments to use for its constructor.
+   * @param {!DTree} node
+   * @param {!Object} unchained bag with same property values as the input but no prototype.
+   * @param {boolean} collectErrorTrace true to generate a nice error message.
+   */
+  function tentativelyApplyDuckTypes(node, unchained, collectErrorTrace) {
     let applicableDuckType = null;
     let applicableConstructorArgs = null;
-    // If we eventually find an applicable type, consider these water
-    // under the duck.
-    const suppressedErrors = collectErrorTrace ? [] : null;
     const notApplicable = {};
 
-    const originals = new Map();
+    // Produce error messages in line if there is only one to try which
+    // should be a common case.
+    const failFast = node.count === 1;
+
+    let report = null;
+    // If we eventually find an applicable type, consider these water
+    // under the duck.
+    let suppressedErrors = null;
+    if (failFast || collectErrorTrace) {
+      report = (duckType, failure) => {
+        if (failFast) {
+          throw failure;
+        }
+        suppressedErrors.push(duckType, failure);
+      };
+      if (!failFast) {
+        suppressedErrors = [];
+      }
+    }
+
+    // We need to rollback changes to unchained if there are multiple
+    // competing types.
+    typeLoop:
     for (const duckType of node.types()) {
+      const scratchSpace = assign(setPrototypeOf({}, null), unchained);
+      const { properties, requiredKeys } = duckType;
+      // Check that all properties are allowed.
+      for (const key in scratchSpace) {
+        if (!(key in properties)) {
+          if (report) {
+            report(
+              duckType,
+              new MissingDuckError(
+                `Duck type ${ duckType.classType.name } does not allow key ${ key }`));
+          }
+          continue typeLoop;
+        }
+      }
+      for (let i = 0, n = requiredKeys.length; i < n; ++i) {
+        const key = requiredKeys[i];
+        if (!(key in scratchSpace)) {
+          if (report) {
+            report(
+              duckType,
+              new MissingDuckError(
+                `Input does not have key ${
+                  key } required by duck type ${ duckType.classType.nam }`));
+          }
+          continue typeLoop;
+        }
+      }
+
       // Compute recursive field values before trying to convert to
       // constructor arguments.
-      let ok = true;
       const { recurseToKeys } = duckType;
       for (let i = 0, n = recurseToKeys.length; i < n; ++i) {
         const recKey = recurseToKeys[i];
         if (recKey in scratchSpace) {
-          originals.set(recKey, scratchSpace[recKey]);
           try {
             // unduckingMap doubles as a memo-table so we will not multiply
             // evaluate.
             scratchSpace[recKey] = process(scratchSpace[recKey]);
           } catch (exc) {
-            if (exc instanceof MissingDuckError) {
+            if (!failFast && exc instanceof MissingDuckError) {
               // The eventual match may not care about this.
-              ok = false;
-              if (suppressedErrors) {
-                suppressedErrors.push(duckType, exc);
+              if (report) {
+                report(duckType, exc);
               }
-              break;
+              continue typeLoop;
             }
             throw exc;
           }
         }
       }
-      if (ok) {
-        const { convertKeys } = duckType;
-        for (let i = 0, n = convertKeys.length; i < n; ++i) {
-          const key = convertKeys[i];
-          if (key in scratchSpace) {
-            const converted = duckType.properties[key].convert(
-              scratchSpace[key], trusted, userContext, notApplicable);
-            if (converted !== notApplicable) {
-              if (!originals.has(converted)) {
-                originals.set(key, scratchSpace[key]);
-              }
-              scratchSpace[key] = converted;
-            } else {
-              ok = false;
-              if (suppressedErrors) {
-                suppressedErrors.push(
-                  duckType,
-                  new MissingDuckError(
-                    `Failed to convert property ${ key } using type ${
-                      duckType.classType.name }`));
-              }
-              break;
+
+      // Apply defaults.
+      // We could do this after convertKeys, but a default looks like
+      // a property bag value, so if converters map from property bag
+      // values to construcor inputs, then applying defaults before
+      // converters is more consistent with the principal of least surprise.
+      const { toConstructorArguments, defaultKeys } = duckType;
+      for (let i = 0, n = defaultKeys.length; i < n; ++i) {
+        const key = defaultKeys[i];
+        if (!(key in scratchSpace)) {
+          scratchSpace[key] = duckType.properties[defaultKeys].default;
+        }
+      }
+
+      // Apply converters for properties.
+      const { convertKeys } = duckType;
+      for (let i = 0, n = convertKeys.length; i < n; ++i) {
+        const key = convertKeys[i];
+        if (key in scratchSpace) {
+          const { convert } = properties[key];
+          const converted = convert(
+            scratchSpace[key], trusted, userContext, notApplicable);
+          if (converted === notApplicable) {
+            if (report) {
+              report(
+                duckType,
+                new MissingDuckError(
+                  `Failed to convert property ${ key } using type ${
+                    duckType.classType.name }`));
             }
+            continue typeLoop;
+          } else {
+            scratchSpace[key] = converted;
           }
         }
       }
-      if (ok) {
-        // Recursively unducked and converted all.
-        const toConstructorArguments = { duckType };
-        const args = toConstructorArguments(scratchSpace, userContext, trusted);
-        if (isArray(args)) {
-          if (applicableDuckType) {
-            throw new DuckError(
-              `Duck hunt found multiple applicable types: ${
-                applicableDuckType.classType.name
-              } and ${ duckType.classType.name }`);
-          }
-          applicableDuckType = duckType;
-          applicableConstructorArgs = args;
+
+      // Now that we've all the properties we need and they've been converted.
+      // turn them into constructor arguments.
+      const args = toConstructorArguments(scratchSpace, trusted, userContext);
+      if (isArray(args)) {
+        if (applicableDuckType) {
+          throw new DuckError(
+            `Duck hunt found multiple applicable types: ${
+              applicableDuckType.classType.name
+            } and ${ duckType.classType.name }`);
         }
+        applicableDuckType = duckType;
+        applicableConstructorArgs = args;
+      } else if (report) {
+        report(duckType,
+          new MissingDuckError(
+            `Failed to compute constructor arguments for ${ duckType.classType.name }`));
       }
-      for (const [ key, value ] of originals) {
-        scratchSpace[key] = value;
-      }
-      originals.clear();
     }
     let errorMessage = null;
-    if (!applicableDuckType && suppressedErrors) {
-      errorMessage = [];
-      for (let i = 0, n = suppressedErrors.length; i < n; i += 2) {
-        errorMessage.push(`${ suppressedErrors[i].classType.name }: ${ suppressedErrors[i + 1] }`);
+    if (!applicableDuckType && collectErrorTrace) {
+      if (suppressedErrors.length) {
+        errorMessage = [];
+        for (let i = 0, n = suppressedErrors.length; i < n; i += 2) {
+          errorMessage.push(`${ suppressedErrors[i].classType.name }: ${ suppressedErrors[i + 1] }`);
+        }
+        errorMessage = errorMessage.join('\n');
+      } else if (!node.count) {
+        errorMessage = 'No types matching';
       }
-      errorMessage = errorMessage.join('\n');
     }
     return { applicableConstructorArgs, applicableDuckType, errorMessage };
   }
+
+  /** For arrays, we recursively process everything. */
+  function processArray(x) {
+    // We create a this-realm array.
+    const result = [];
+
+    for (let stringKeys = getOwnPropertyNames(x),
+      i = 0, n = stringKeys.length;
+      i < n; ++i) {
+      // TODO: is for(...in...) loop more efficient for long arrays?
+      // TODO: do we even care about holes and non-index keys?
+      const key = stringKeys[i];
+      if (key !== '__proto__' && key !== 'length') {
+        // TODO: might setting length fill in holes.  If not, can skip check.
+        result[key] = process(x[key]);
+      }
+    }
+    for (let symbolKeys = getOwnPropertySymbols(x),
+      i = 0, n = symbolKeys.length;
+      i < n; ++i) {
+      const key = symbolKeys[i];
+      result[key] = process(x[key]);
+    }
+    return result;
+  }
+
+  /** Find an applicable type for an object and apply it. */
+  function processPojo(x) {
+    // Use a temporary object so we don't multiply read fields.
+    const unchained = setPrototypeOf({}, null);
+    for (let stringKeys = getOwnPropertyNames(x),
+      i = 0, n = stringKeys.length;
+      i < n; ++i) {
+      const key = stringKeys[i];
+      if (key !== '__proto__') {
+        // HACK: could fall back to Object.defineProperty
+        // when key === '__proto__'
+        unchained[key] = x[key];
+      }
+    }
+    for (let symbolKeys = getOwnPropertySymbols(x),
+      i = 0, n = symbolKeys.length;
+      i < n; ++i) {
+      const key = symbolKeys[i];
+      unchained[key] = x[key];
+    }
+
+    const node = root.duckHunt(unchained);
+    const { applicableConstructorArgs, applicableDuckType } =
+      // Try without collecting error trace.
+      tentativelyApplyDuckTypes(node, unchained, false);
+    if (!applicableConstructorArgs) {
+      // TODO: map node.types() to type names.
+      // TODO: use suppressed errors.
+      throw new MissingDuckError({
+        errorMessage: null,
+        toString() {
+          if (this.errorMessage === null) {
+            // Redo with the extra work to collect error trace.
+            const { errorMessage } = tentativelyApplyDuckTypes(
+              node, unchained, true);
+            this.errorMessage = errorMessage ||
+              `Failed to compute constructor arguments for [${
+                Array.from(node.types()).map((duckType) => duckType.classType.name)
+              }]`;
+          }
+          return this.errorMessage;
+        },
+      });
+    }
+    const ClassType = applicableDuckType.classType;
+    return new ClassType(...applicableConstructorArgs);
+  }
+
+  return process; // eslint-disable-line no-use-before-define
 }
 
 class DTree {
-  constructor(duckTypes, keys, parent, metadataMaker) {
+  constructor(duckTypes, keys, parent) {
     const count = duckTypes.length;
 
     this.parent = parent;
@@ -291,10 +330,10 @@ class DTree {
     this.duckTypes = null;
     this.haveNot = null;
     this.have = null;
-    this.specialValueMap = null;
+    this.valueMap = null;
 
-    if (count <= 1) {
-      this.duckTypes = duckTypes.map(metadataMaker);
+    if (count <= 1 || keys.size === 0) {
+      this.duckTypes = duckTypes;
       return;
     }
 
@@ -318,8 +357,9 @@ class DTree {
       const haveNot = [];
       for (let i = 0; i < count; ++i) {
         const duckType = duckTypes[i];
-        if (key in duckType.properties) {
-          const propertyDescriptor = duckType.properties;
+        const { properties } = duckType;
+        if (key in properties) {
+          const propertyDescriptor = properties[key];
           if ('value' in propertyDescriptor) {
             const requiredValue = propertyDescriptor.value;
             if (!valueMap) {
@@ -332,6 +372,9 @@ class DTree {
           } else {
             haveWithoutSpecialValue.push(duckType);
           }
+          if (!propertyDescriptor.required) {
+            haveNot.push(duckType);
+          }
         } else {
           haveNot.push(duckType);
         }
@@ -339,8 +382,10 @@ class DTree {
       let denom = 0;
       let entropyAfter = 0;
       function moreEntropy(n) {
-        entropyAfter += n * Math.log2(n);
-        denom += n;
+        if (n) {
+          entropyAfter += n * Math.log2(n);
+          denom += n;
+        }
       }
       moreEntropy(haveNot.length);
       moreEntropy(haveWithoutSpecialValue.length);
@@ -351,7 +396,7 @@ class DTree {
       }
       entropyAfter /= denom;
 
-      const informationGain = entropyAfter - entropyBefore;
+      const informationGain = entropyBefore - entropyAfter;
       if (informationGain > bestInformationGain) {
         bestInformationGain = informationGain;
         bestPartitionKey = key;
@@ -360,18 +405,24 @@ class DTree {
     }
 
     const { haveNot, haveWithoutSpecialValue, valueMap } = bestPartition;
-    keys.delete(bestPartitionKey);
-    this.key = bestPartitionKey;
-    this.haveNot = new DTree(haveNot, keys, this, metadataMaker);
-    this.have = new DTree(haveWithoutSpecialValue, keys, this, metadataMaker);
-    if (valueMap) {
-      this.valueMap = new Map();
-      for (const [ k, ts ] of valueMap) {
-        this.valueMap.set(
-          k, new DTree(ts.concat(haveWithoutSpecialValue), keys, this, metadataMaker));
+    if (bestInformationGain === 0 &&
+        haveNot.length === count && haveWithoutSpecialValue.length === count) {
+      // Don't bother with nodes for optional properties without special values.
+      this.duckTypes = duckTypes;
+    } else {
+      keys.delete(bestPartitionKey);
+      this.key = bestPartitionKey;
+      this.haveNot = new DTree(haveNot, keys, this);
+      this.have = new DTree(haveWithoutSpecialValue, keys, this);
+      if (valueMap) {
+        this.valueMap = new Map();
+        for (const [ k, ts ] of valueMap) {
+          this.valueMap.set(
+            k, new DTree(ts.concat(haveNot), keys, this));
+        }
       }
+      keys.add(bestPartitionKey);
     }
-    keys.add(bestPartitionKey);
   }
 
   types() {
@@ -381,7 +432,7 @@ class DTree {
   /**
    *
    */
-  duckHunt(x, process) {
+  duckHunt(x) {
     // Loop from unrolling tail calls.
     // eslint-disable-next-line consistent-this
     for (let node = this; true;) { // eslint-disable-line no-constant-condition
@@ -392,19 +443,11 @@ class DTree {
 
       const { key } = node;
       if (key in x) {
-        let { valueMap } = node;
+        const { valueMap } = node;
         // Unless the specific value indicates otherwise.
         node = node.have;
         if (valueMap) {
-          let value = null;
-          try {
-            value = process(x[key]);
-          } catch (exc) {
-            if (!(exc instanceof DuckError)) {
-              throw exc;
-            }
-            valueMap = null;
-          }
+          const value = x[key];
           if (valueMap && valueMap.has(value)) {
             node = valueMap.get(value);
           }
@@ -426,29 +469,54 @@ class DTree {
     const checked = [];
     // eslint-disable-next-line consistent-this
     for (let node = this; node; node = node.parent) {
-      checked.push(node.key);
+      if (node.key) {
+        checked.push(node.key);
+      }
     }
     checked.reverse();
     const available = [ ...getOwnPropertyNames(x), ...getOwnPropertySymbols(x) ];
-    return `Could not find duck type for\n[${
-      checked }]\ngiven value with properties\n[${
+    return `Could not find duck type for\n  [${
+      checked }]\ngiven value with properties\n  [${
       available }]`;
+  }
+
+  toJSON() {
+    const obj = { count: this.count };
+    if (this.duckTypes) {
+      obj.duckTypes = this.duckTypes.map((typ) => typ.classType.name);
+    }
+    if (this.key !== null) {
+      obj.key = this.key;
+    }
+    if (this.have) {
+      obj.have = this.have.toJSON();
+    }
+    if (this.haveNot) {
+      obj.haveNot = this.haveNot.toJSON();
+    }
+    if (this.valueMap) {
+      obj.valueMap = {};
+      for (const [ key, value ] of this.valueMap) {
+        obj.valueMap[key] = value.toJSON();
+      }
+    }
+    return obj;
   }
 }
 
 function duckTypeMetadataMaker() {
   const metadataMap = new Map();
   return function makeMetadata(duckType) {
-    if (!(hasOwnProperty.call(duckType, 'classType') &&
+    if (!(hasOwn(duckType, 'classType') &&
           typeof duckType.classType === 'function')) {
       throw new Error('Duck type missing .classType');
     }
-    if (!(hasOwnProperty.call(duckType, 'properties') &&
+    if (!(hasOwn(duckType, 'properties') &&
           typeof duckType.properties === 'object' &&
           duckType.properties)) {
       throw new Error('Duck type missing .properties');
     }
-    if (!(hasOwnProperty.call(duckType, 'toConstructorArguments') &&
+    if (!(hasOwn(duckType, 'toConstructorArguments') &&
           typeof duckType.toConstructorArguments === 'function')) {
       throw new Error('Duck type missing .toConstructorArguments');
     }
@@ -462,6 +530,8 @@ function duckTypeMetadataMaker() {
     const properties = {};
     setPrototypeOf(properties, null);
 
+    const requiredKeys = [];
+    const defaultKeys = [];
     const convertKeys = [];
     const recurseToKeys = [];
 
@@ -475,54 +545,84 @@ function duckTypeMetadataMaker() {
         const property = {};
         setPrototypeOf(property, null);
 
-        if (!hasOwnProperty.call(rawProperty, 'recurse') ||
-            rawProperty.recurse === true) {
+        const hasDefault = hasOwn(rawProperty, 'default');
+        const defaultValue = hasDefault ? rawProperty.default : null;
+        if (hasDefault) {
+          defaultKeys.push(key);
+          property.default = defaultValue;
+        }
+
+        property.required = hasOwn(rawProperty, 'required') ?
+          rawProperty.required === true :
+          !hasDefault;
+        if (property.required) {
+          requiredKeys.push(key);
+        }
+
+        if (hasOwn(rawProperty, 'value')) {
+          property.value = rawProperty.value;
+        }
+
+        if (hasOwn(rawProperty, 'recurse') ?
+          rawProperty.recurse === true :
+        // Do not recurse by default to fields with mandated values.
+          !hasOwn(rawProperty, 'value')) {
           recurseToKeys.push(key);
         }
 
-        if (hasOwnProperty.call(rawProperty, 'value')) {
-          property.value = rawProperty.value;
-        } else {
-          let rawConvert = hasOwnProperty.call(rawProperty, 'convert') ?
-            rawProperty.convert : null;
-          if (typeof rawConvert !== 'function') {
-            rawConvert = null;
-          }
+        let rawConvert = hasOwn(rawProperty, 'convert') ?
+          rawProperty.convert : null;
+        if (typeof rawConvert !== 'function') {
+          rawConvert = null;
+        }
 
-          const requireTrusted = hasOwnProperty.call(rawProperty, 'trusted') &&
-              rawProperty.trusted === true;
+        const hasInnocuous = hasOwn(rawProperty, 'innocuous');
+        const requireTrusted = hasOwn(rawProperty, 'trusted') ?
+          rawProperty.trusted === true :
+          hasInnocuous;
 
-          let type = hasOwnProperty.call(rawProperty, 'type') ?
-            rawProperty.type : null;
-          if (typeof type !== 'string' && typeof type !== 'function') {
-            type = null;
-          }
+        let type = hasOwn(rawProperty, 'type') ?
+          rawProperty.type : null;
+        if (typeof type !== 'string' && typeof type !== 'function') {
+          type = null;
+        }
 
-          const innocuous = hasOwnProperty.call(rawProperty, 'innocuous') ?
-            rawProperty.innocuous : null;
+        const requiresValue = hasOwn(rawProperty, 'value');
+        const requiredValue = requiresValue && rawProperty.value;
 
-          if (rawConvert || requireTrusted || type) {
-            property.convert = function convert(value, trusted, userContext, notApplicable) {
-              if (type) {
-                if (typeof type === 'string') {
-                  if (type !== typeof value) {
-                    return notApplicable;
-                  }
-                } else if (typeof type === 'function') {
-                  // TODO: substitute Array for isArray, etc.
-                  if (!(value && value instanceof type)) {
-                    return notApplicable;
-                  }
+        const innocuous = hasInnocuous ?
+          rawProperty.innocuous : defaultValue;
+
+        if (requireTrusted || type || requiresValue) {
+          property.convert = function convert(value, trusted, userContext, notApplicable) {
+            if (requiresValue) {
+              // TODO: NaN
+              if (requiredValue !== value) {
+                return notApplicable;
+              }
+            } else if (type) {
+              if (typeof type === 'string') {
+                if (type !== typeof value) {
+                  return notApplicable;
+                }
+              } else if (typeof type === 'function') {
+                // TODO: substitute Array for isArray, etc.
+                if (!(value && value instanceof type)) {
+                  return notApplicable;
                 }
               }
-              if (requireTrusted && !trusted) {
-                return innocuous;
-              }
-              return (rawConvert) ?
-                rawConvert(value, trusted, userContext, notApplicable) : value;
-            };
-            convertKeys.push(key);
-          }
+            }
+            let tvalue = value;
+            if (requireTrusted && !trusted) {
+              tvalue = innocuous;
+            }
+            return (rawConvert) ?
+              rawConvert(tvalue, trusted, userContext, notApplicable) : tvalue;
+          };
+          convertKeys.push(key);
+        } else if (rawConvert) {
+          property.convert = rawConvert;
+          convertKeys.push(key);
         }
         properties[key] = property;
       }
@@ -534,6 +634,8 @@ function duckTypeMetadataMaker() {
       toConstructorArguments,
       convertKeys,
       recurseToKeys,
+      defaultKeys,
+      requiredKeys,
     };
 
     metadataMap.set(duckType, augmented);
@@ -545,25 +647,31 @@ function makePond(duckTypes) {
   let root = null;
   const metadataMaker = duckTypeMetadataMaker();
 
+  function getRoot() {
+    if (!root) {
+      const keys = new Set();
+      const addKey = keys.add.bind(keys);
+      for (let i = 0, n = duckTypes.length; i < n; ++i) {
+        const props = duckTypes[i].properties;
+        getOwnPropertyNames(props).forEach(addKey);
+        getOwnPropertySymbols(props).forEach(addKey);
+      }
+      root = new DTree(
+        // Dedupe and normalize.
+        Array.from(new Set(duckTypes)).map(metadataMaker),
+        keys, null);
+    }
+    return root;
+  }
+
   function unducker(trusted) {
     return function unduck(x, userContext) {
-      if (!root && duckTypes.length) {
-        const keys = new Set();
-        const addKey = keys.add.bind(keys);
-        for (let i = 0, n = duckTypes.length; i < n; ++i) {
-          const props = duckTypes[i].properties;
-          getOwnPropertyNames(props).forEach(addKey);
-          getOwnPropertySymbols(props).forEach(addKey);
-        }
-        root = new DTree(
-          Array.from(new Set(duckTypes)), keys, null, metadataMaker);
-      }
-      return processor(trusted, root, userContext)(x);
+      return processor(trusted, getRoot(), userContext)(x);
     };
   }
 
   const pond = unducker(false);
-  pond.trusted = unducker(true);
+  pond.trust = unducker(true);
   pond.withTypes = function withTypes(...moreDuckTypes) {
     const duckTypeSet = new Set(duckTypes);
     // Get all our ducks in a row.
@@ -575,16 +683,16 @@ function makePond(duckTypes) {
 
     return makePond(Array.from(duckTypeSet));
   };
+  pond._diagnostic = function _diagnostic() {
+    return getRoot().toJSON();
+  };
   return pond;
 }
 
 
 // Canonical name
 module.exports.unduck =
-  // Abbreviate
-  // eslint-disable-next-line no-multi-assign
-  module.exports.ud =
-    // Start with an empty pond and let clients add to it with
-    // .withTypes(...).
-    makePond([]);
+  // Start with an empty pond and let clients add to it with
+  // .withTypes(...).
+  makePond([]);
 module.DuckError = DuckError;
