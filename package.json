@@ -10,7 +10,7 @@
     "cover": "istanbul cover _mocha",
     "coveralls": "npm run cover -- --report lcovonly && cat ./coverage/lcov.info | coveralls",
     "lint": "eslint .",
-    "prepack": "echo HACK npm run lint && npm test",
+    "prepack": "npm run lint && npm test",
     "test": "mocha"
   },
   "repository": {
@@ -55,6 +55,7 @@
       }
     },
     "rules": {
+      "complexity": ["error", { "max": 20 }],
       "id-match": 0,
       "no-underscore-dangle": 0,
       "no-warning-comments": 0
