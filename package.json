@@ -1,6 +1,6 @@
 {
   "name": "unduck",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "infer class types for bags of properties",
   "main": "index.js",
   "files": [
