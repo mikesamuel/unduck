@@ -2,7 +2,7 @@
 
 by easily upgrading bags of properties to instances of classes.
 
-See [API][./API.md] to find out how to use the draft implementation.
+See [API](./API.md) to find out how to use the draft implementation.
 
 [![Build Status](https://travis-ci.org/mikesamuel/unduck.svg?branch=master)](https://travis-ci.org/mikesamuel/unduck)
 [![Dependencies Status](https://david-dm.org/mikesamuel/unduck/status.svg)](https://david-dm.org/mikesamuel/unduck)
