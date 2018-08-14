@@ -1,9 +1,11 @@
 {
   "name": "unduck",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "infer class types for bags of properties",
   "main": "index.js",
-  "files": ["index.js"],
+  "files": [
+    "index.js"
+  ],
   "directories": {
     "test": "test"
   },
@@ -56,7 +58,12 @@
       }
     },
     "rules": {
-      "complexity": ["error", { "max": 20 }],
+      "complexity": [
+        "error",
+        {
+          "max": 20
+        }
+      ],
       "id-match": 0,
       "no-underscore-dangle": 0,
       "no-warning-comments": 0
