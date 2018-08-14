@@ -1,8 +1,17 @@
-# How to build castles out of ducks
+# Building castles out of ducks
 
 by easily upgrading bags of properties to instances of classes.
 
-## Problem: Ducks can be hard to juggle
+See [API][./API.md] to find out how to use the draft implementation.
+
+[![Build Status](https://travis-ci.org/mikesamuel/unduck.svg?branch=master)](https://travis-ci.org/mikesamuel/unduck)
+[![Dependencies Status](https://david-dm.org/mikesamuel/unduck/status.svg)](https://david-dm.org/mikesamuel/unduck)
+[![npm](https://img.shields.io/npm/v/unduck.svg)](https://www.npmjs.com/package/unduck)
+[![Coverage Status](https://coveralls.io/repos/github/mikesamuel/unduck/badge.svg?branch=master)](https://coveralls.io/github/mikesamuel/unduck?branch=master)
+[![Known Vulnerabilities](https://snyk.io/test/github/mikesamuel/unduck/badge.svg?targetFile=package.json)](https://snyk.io/test/github/mikesamuel/unduck?targetFile=package.json)
+
+
+## Problem: Juggling ducks is hard
 
 JavaScript provides two main ways to represent structured data.
 
