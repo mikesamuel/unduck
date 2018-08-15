@@ -134,6 +134,7 @@ function processor(trusted, root, userContext) {
         return null;
       }
     }
+    // required values enforced in convert.  TODO: maybe reconsider this
 
     // Compute recursive field values before trying to convert to
     // constructor arguments.
@@ -345,26 +346,178 @@ function processor(trusted, root, userContext) {
   return process; // eslint-disable-line no-use-before-define
 }
 
-class DTree {
-  constructor(duckTypes, keys, parent) {
-    const count = duckTypes.length;
 
+function keysForTypes(duckTypes) {
+  const required = new Set();
+  const optionalOnly = new Set();
+
+  for (let i = 0, n = duckTypes.length; i < n; ++i) {
+    const { properties } = duckTypes[i];
+    function addKey(key) { // eslint-disable-line no-inner-declarations
+      (properties[key].required ? required : optionalOnly).add(key);
+    }
+    getOwnPropertyNames(properties).forEach(addKey);
+    getOwnPropertySymbols(properties).forEach(addKey);
+  }
+  const keys = new Set(optionalOnly);
+  for (const key of required) {
+    optionalOnly.delete(key);
+    keys.add(key);
+  }
+  return [ keys, optionalOnly ];
+}
+
+function entropyAfterPartitions(partitionLengths) {
+  let numerator = 0;
+  let denominator = 0;
+  for (const n of partitionLengths) {
+    if (n) {
+      numerator += n * Math.log2(n);
+      denominator += n;
+    }
+  }
+  return denominator ? numerator / denominator : Infinity;
+}
+
+/**
+ * Find a key required by one or more types.
+ */
+function partitionOnRequiredKey(duckTypes, keys) {
+  const count = duckTypes.length;
+
+  let minEntropyAfter = Infinity;
+  let bestPartitionKey = null;
+  let bestPartition = null;
+
+  /**
+   * Try key to see if partitioning on it is better than the
+   * next best alternative found thus far.
+   */
+  function tryPartition(key) {
+    let valueMap = null;
+    const haveWithoutSpecialValue = [];
+    const haveNot = [];
+    for (let i = 0; i < count; ++i) {
+      const duckType = duckTypes[i];
+      const { properties } = duckType;
+      if (key in properties) {
+        const propertyDescriptor = properties[key];
+        if ('value' in propertyDescriptor) {
+          const requiredValue = propertyDescriptor.value;
+          if (!valueMap) {
+            valueMap = new Map();
+          }
+          if (!valueMap.has(requiredValue)) {
+            valueMap.set(requiredValue, []);
+          }
+          valueMap.get(requiredValue).push(duckType);
+        } else {
+          haveWithoutSpecialValue.push(duckType);
+        }
+        if (!propertyDescriptor.required) {
+          haveNot.push(duckType);
+        }
+      } else {
+        haveNot.push(duckType);
+      }
+    }
+
+    if (haveNot.length === count && haveWithoutSpecialValue.length === count) {
+      return;
+    }
+
+    const partitionSizes = [ haveNot.length, haveWithoutSpecialValue.length ];
+    if (valueMap) {
+      for (const [ , types ] of valueMap) {
+        partitionSizes.push(types.length + haveWithoutSpecialValue.length);
+      }
+    }
+    const entropyAfter = entropyAfterPartitions(partitionSizes);
+
+    if (entropyAfter < minEntropyAfter) {
+      minEntropyAfter = entropyAfter;
+      bestPartitionKey = key;
+      bestPartition = { haveNot, haveWithoutSpecialValue, valueMap };
+    }
+  }
+  // Find the highest information value partition.
+  keys.forEach(tryPartition);
+
+  return {
+    entropyAfter: minEntropyAfter,
+    partitionKey: bestPartitionKey,
+    partition: bestPartition,
+  };
+}
+
+/**
+ * Group types based on which optional keys they may have.
+ */
+function partitionOnOptionalKeys(duckTypes, keys) {
+  const count = duckTypes.length;
+  const partitionSizes = [];
+  const keyPartitionMap = new Map();
+
+  for (const key of keys) {
+    const mayHave = [];
+    for (const duckType of duckTypes) {
+      if (key in duckType.properties) {
+        mayHave.push(duckType);
+      }
+    }
+    if (mayHave.length <= count / 2) {
+      keyPartitionMap.set(key, mayHave);
+      partitionSizes.push(mayHave.length);
+    }
+  }
+
+  if (keyPartitionMap.size === 0) {
+    return { entropyAfter: Infinity };
+  }
+
+  // If we find no keys, that doesn't mean we don't have to still look.
+  partitionSizes.push(count);
+  const entropyAfter = entropyAfterPartitions(partitionSizes);
+
+  return { entropyAfter, keyPartitionMap };
+}
+
+
+class DTree {
+  constructor(duckTypes, used, parent) {
     this.parent = parent;
-    this.count = count;
+    this.count = duckTypes.length;
     this.key = null;
     this.duckTypes = null;
     this.haveNot = null;
     this.have = null;
     this.valueMap = null;
+    this.mayHaveMap = null;
+    this.haveNone = null;
 
-    if (count <= 1 || keys.size === 0) {
+    const [ keys, optionalOnly ] = keysForTypes(duckTypes);
+    const unused = new Set(keys);
+    const optionalOnlyUnused = new Set(optionalOnly);
+    for (const key of used) {
+      unused.delete(key);
+      optionalOnlyUnused.delete(key);
+    }
+
+    const count = duckTypes.length;
+    if (count <= 1) {
       this.duckTypes = duckTypes;
       return;
     }
 
-    let bestInformationGain = -Infinity;
-    let bestPartitionKey = null;
-    let bestPartition = null;
+    // First try finding a must-have parition by looking at required keys.
+    // eslint-disable-next-line prefer-const
+    let { entropyAfter: reqEntropyAfter, partitionKey, partition } =
+      partitionOnRequiredKey(duckTypes, unused);
+
+    // Next see if looking at a may-have partition.
+    // eslint-disable-next-line prefer-const
+    let { entropyAfter: optEntropyAfter, keyPartitionMap } =
+      partitionOnOptionalKeys(duckTypes, optionalOnlyUnused);
 
     // For an N-way classifier, the entropy is
     //   H(X) = -(sum from i=1..n, p(xi) * log p(xi)
@@ -372,86 +525,43 @@ class DTree {
     // the entropy before is
     //   count * -(1/count) * log(1/count)
     // but log(1/count) = -log(count) so
-
     const entropyBefore = Math.log2(count);
 
-    /**
-     * Try key to see if partitioning on it is better than the
-     * next best alternative found thus far.
-     */
-    function tryPartition(key) {
-      let valueMap = null;
-      const haveWithoutSpecialValue = [];
-      const haveNot = [];
-      for (let i = 0; i < count; ++i) {
-        const duckType = duckTypes[i];
-        const { properties } = duckType;
-        if (key in properties) {
-          const propertyDescriptor = properties[key];
-          if ('value' in propertyDescriptor) {
-            const requiredValue = propertyDescriptor.value;
-            if (!valueMap) {
-              valueMap = new Map();
-            }
-            if (!valueMap.has(requiredValue)) {
-              valueMap.set(requiredValue, []);
-            }
-            valueMap.get(requiredValue).push(duckType);
-          } else {
-            haveWithoutSpecialValue.push(duckType);
-          }
-          if (!propertyDescriptor.required) {
-            haveNot.push(duckType);
-          }
-        } else {
-          haveNot.push(duckType);
-        }
-      }
-      let denom = 0;
-      let entropyAfter = 0;
-      function moreEntropy(n) { // eslint-disable-line no-inner-declarations
-        if (n) {
-          entropyAfter += n * Math.log2(n);
-          denom += n;
-        }
-      }
-      moreEntropy(haveNot.length);
-      moreEntropy(haveWithoutSpecialValue.length);
-      if (valueMap) {
-        for (const [ , types ] of valueMap) {
-          moreEntropy(types.length + haveWithoutSpecialValue.length);
-        }
-      }
-      entropyAfter /= denom;
-
-      const informationGain = entropyBefore - entropyAfter;
-      if (informationGain > bestInformationGain) {
-        bestInformationGain = informationGain;
-        bestPartitionKey = key;
-        bestPartition = { haveNot, haveWithoutSpecialValue, valueMap };
-      }
+    const reqInformationGain = entropyBefore - reqEntropyAfter;
+    const optInformationGain = entropyBefore - optEntropyAfter;
+    if (keyPartitionMap && reqInformationGain < optInformationGain) {
+      partition = null;
+    } else if (partition) {
+      keyPartitionMap = null;
     }
-    // Find the highest information value partition.
-    keys.forEach(tryPartition);
 
-    const { haveNot, haveWithoutSpecialValue, valueMap } = bestPartition;
-    if (bestInformationGain === 0 &&
-        haveNot.length === count && haveWithoutSpecialValue.length === count) {
-      // Don't bother with nodes for optional properties without special values.
-      this.duckTypes = duckTypes;
-    } else {
-      keys.delete(bestPartitionKey);
-      this.key = bestPartitionKey;
-      this.haveNot = new DTree(haveNot, keys, this);
-      this.have = new DTree(haveWithoutSpecialValue, keys, this);
+    if (partition) {
+      const { haveNot, haveWithoutSpecialValue, valueMap } = partition;
+      used.add(partitionKey);
+      this.key = partitionKey;
+      this.haveNot = new DTree(haveNot, used, this);
+      this.have = new DTree(haveWithoutSpecialValue, used, this);
       if (valueMap) {
         this.valueMap = new Map();
         for (const [ k, ts ] of valueMap) {
           this.valueMap.set(
-            k, new DTree(ts.concat(haveNot), keys, this));
+            k, new DTree(ts.concat(haveNot), used, this));
         }
       }
-      keys.add(bestPartitionKey);
+      used.delete(partitionKey);
+    } else if (keyPartitionMap) {
+      this.mayHaveMap = new Map();
+      const newUsed = new Set(used);
+      for (const [ key ] of keyPartitionMap) {
+        newUsed.add(key);
+      }
+      for (const [ key, types ] of keyPartitionMap) {
+        this.mayHaveMap.set(key, new DTree(types, newUsed, this));
+      }
+      this.haveNone = new DTree(duckTypes, newUsed, this);
+    } else {
+      // this is a leaf node and hunt falls back to linear search.
+      this.duckTypes = duckTypes;
     }
   }
 
@@ -471,19 +581,31 @@ class DTree {
         return node;
       }
 
-      const { key } = node;
-      if (key in x) {
-        const { valueMap } = node;
-        // Unless the specific value indicates otherwise.
-        node = node.have;
-        if (valueMap) {
-          const value = x[key];
-          if (valueMap && valueMap.has(value)) {
-            node = valueMap.get(value);
+      const { mayHaveMap } = node;
+      if (mayHaveMap) {
+        node = node.haveNone;
+        for (const key in x) {
+          const next = mayHaveMap.get(key);
+          if (next) {
+            node = next;
+            break;
           }
         }
       } else {
-        node = node.haveNot;
+        const { key } = node;
+        if (key in x) {
+          const { valueMap } = node;
+          // Unless the specific value indicates otherwise.
+          node = node.have;
+          if (valueMap) {
+            const value = x[key];
+            if (valueMap && valueMap.has(value)) {
+              node = valueMap.get(value);
+            }
+          }
+        } else {
+          node = node.haveNot;
+        }
       }
       if (!node.count) {
         throw new MissingDuckError({
@@ -529,6 +651,15 @@ class DTree {
       for (const [ key, value ] of this.valueMap) {
         obj.valueMap[key] = value.toJSON();
       }
+    }
+    if (this.mayHaveMap) {
+      obj.mayHaveMap = {};
+      for (const [ key, value ] of this.mayHaveMap) {
+        obj.mayHaveMap[key] = value.toJSON();
+      }
+    }
+    if (this.haveNone) {
+      obj.haveNone = this.haveNone.toJSON();
     }
     return obj;
   }
@@ -610,7 +741,7 @@ function duckTypeMetadataMaker() {
 
       if (hasOwn(rawProperty, 'recurse') ?
         rawProperty.recurse === true :
-      // Do not recurse by default to fields with mandated values.
+        // Do not recurse by default to fields with mandated values.
         !hasOwn(rawProperty, 'value')) {
         recurseToKeys.push(key);
       }
@@ -704,17 +835,10 @@ function makePond(duckTypes) {
 
   function getRoot() {
     if (!root) {
-      const keys = new Set();
-      const addKey = keys.add.bind(keys);
-      for (let i = 0, n = duckTypes.length; i < n; ++i) {
-        const props = duckTypes[i].properties;
-        getOwnPropertyNames(props).forEach(addKey);
-        getOwnPropertySymbols(props).forEach(addKey);
-      }
-      root = new DTree(
-        // Dedupe and normalize.
-        Array.from(new Set(duckTypes)).map(metadataMaker),
-        keys, null);
+      // Dedupe and normalize.
+      const duckTypesNorm = Array.from(new Set(duckTypes)).map(metadataMaker);
+
+      root = new DTree(duckTypesNorm, new Set(), null);
     }
     return root;
   }

@@ -17,6 +17,7 @@
 
 /* eslint id-length: ["error", { "exceptions": ["ud", "x", "y"] }] */
 /* eslint array-element-newline: [0] */
+/* eslint no-magic-numbers: [0] */
 
 'use strict';
 
@@ -189,7 +190,6 @@ describe('unduck', () => {
     });
   });
   it('primitive array', () => {
-    // eslint-disable-next-line no-magic-numbers
     const arr = [ 0, 1, 2, 3, 'four', null, [ 6 ] ];
     const unducked = unduck(arr);
 
@@ -431,26 +431,14 @@ describe('unduck', () => {
           'Date': {
             'count': 2,
             'key': 'millis',
-            'have': {
-              'count': 1,
-              'duckTypes': [ 'Date' ],
-            },
-            'haveNot': {
-              'count': 1,
-              'duckTypes': [ 'Point' ],
-            },
+            'have': { 'count': 1, 'duckTypes': [ 'Date' ] },
+            'haveNot': { 'count': 1, 'duckTypes': [ 'Point' ] },
           },
           'Thing': {
             'count': 2,
             'key': 'y',
-            'have': {
-              'count': 1,
-              'duckTypes': [ 'Point' ],
-            },
-            'haveNot': {
-              'count': 1,
-              'duckTypes': [ 'Thing' ],
-            },
+            'have': { 'count': 1, 'duckTypes': [ 'Point' ] },
+            'haveNot': { 'count': 1, 'duckTypes': [ 'Thing' ] },
           },
         },
       });
@@ -829,6 +817,159 @@ describe('unduck', () => {
         ]);
       expect(result).to.deep.equals({ '_x': { '_x': 'x' } });
       postCond();
+    });
+  });
+
+  describe('sparse heterogeneous', () => {
+    class NaryOperator {
+      constructor(operator, operands) {
+        this.operator = operator;
+        this.operands = operands;
+      }
+
+      toString() {
+        return `(${ this.operands.join(` ${ this.operator } `) })`;
+      }
+    }
+    class UnaryOperator {
+      constructor(operator, operand) {
+        this.operator = operator;
+        this.operand = operand;
+      }
+
+      toString() {
+        return `(${ this.operator }${ this.operand })`;
+      }
+    }
+    class CmpOperator extends NaryOperator {}
+    class ArithOperator extends NaryOperator {}
+    class StrOperator extends NaryOperator {}
+
+    function toConstructorArguments(obj) {
+      let operator = null;
+      let operands = null;
+      for (const key in obj) {
+        if (operator !== null) {
+          return null;
+        }
+        operator = key;
+        operands = obj[key];
+      }
+      if (operator === null) {
+        return null;
+      }
+      return [ operator, operands ];
+    }
+
+    const ud = unduck.withTypes(
+      {
+        classType: CmpOperator,
+        toConstructorArguments,
+        properties: {
+          $lt: { required: false, type: Array },
+          $lte: { required: false, type: Array },
+          $gt: { required: false, type: Array },
+          $gte: { required: false, type: Array },
+          $eq: { required: false, type: Array },
+          $ne: { required: false, type: Array },
+        },
+      },
+      {
+        classType: UnaryOperator,
+        toConstructorArguments,
+        properties: {
+          $neg: { required: false },
+          $not: { required: false },
+          $inv: { required: false },
+        },
+      },
+      {
+        classType: ArithOperator,
+        toConstructorArguments,
+        properties: {
+          $add: { required: false, type: Array },
+          $sub: { required: false, type: Array },
+          $mul: { required: false, type: Array },
+          $div: { required: false, type: Array },
+          $mod: { required: false, type: Array },
+        },
+      },
+      {
+        classType: StrOperator,
+        toConstructorArguments,
+        properties: {
+          $cat: { required: false, type: Array },
+          $rep: { required: false, type: Array },
+          $sub: { required: false, type: Array },
+          $low: { required: false, type: Array },
+          $upp: { required: false, type: Array },
+        },
+      },
+    );
+
+    it('dtree', () => {
+      expect(ud._diagnostic()).to.deep.equal({
+        'count': 4,
+        'haveNone': {
+          'count': 4,
+          'duckTypes': [
+            'CmpOperator',
+            'UnaryOperator',
+            'ArithOperator',
+            'StrOperator',
+          ],
+        },
+        'mayHaveMap': {
+          '$add': { 'count': 1, 'duckTypes': [ 'ArithOperator' ] },
+          '$cat': { 'count': 1, 'duckTypes': [ 'StrOperator' ] },
+          '$div': { 'count': 1, 'duckTypes': [ 'ArithOperator' ] },
+          '$eq': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$gt': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$gte': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$inv': { 'count': 1, 'duckTypes': [ 'UnaryOperator' ] },
+          '$low': { 'count': 1, 'duckTypes': [ 'StrOperator' ] },
+          '$lt': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$lte': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$mod': { 'count': 1, 'duckTypes': [ 'ArithOperator' ] },
+          '$mul': { 'count': 1, 'duckTypes': [ 'ArithOperator' ] },
+          '$ne': { 'count': 1, 'duckTypes': [ 'CmpOperator' ] },
+          '$neg': { 'count': 1, 'duckTypes': [ 'UnaryOperator' ] },
+          '$not': { 'count': 1, 'duckTypes': [ 'UnaryOperator' ] },
+          '$rep': { 'count': 1, 'duckTypes': [ 'StrOperator' ] },
+          '$sub': {
+            'count': 2,
+            'duckTypes': [
+              'ArithOperator',
+              'StrOperator',
+            ],
+          },
+          '$upp': { 'count': 1, 'duckTypes': [ 'StrOperator' ] },
+        },
+      });
+    });
+    it('expr', () => {
+      const unducked = ud({
+        $neg: {
+          $add: [
+            { $mul: [ 23, 42 ] },
+            123,
+          ],
+        },
+      });
+      expect(unducked.toString()).equals('($neg((23 $mul 42) $add 123))');
+    });
+    it('multiple', () => {
+      expect(() => ud({ $neg: 1, $inv: 2 })).to.throw(
+        DuckError, 'Failed to compute constructor arguments for UnaryOperator');
+    });
+    it('empty', () => {
+      expect(() => ud({})).to.throw(
+        DuckError, [
+          'CmpOperator: MissingDuckError: Failed to compute constructor arguments for CmpOperator',
+          'UnaryOperator: MissingDuckError: Failed to compute constructor arguments for UnaryOperator',
+          'ArithOperator: MissingDuckError: Failed to compute constructor arguments for ArithOperator',
+          'StrOperator: MissingDuckError: Failed to compute constructor arguments for StrOperator',
+        ].join('\n'));
     });
   });
 });
