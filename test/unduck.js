@@ -23,6 +23,7 @@
 
 const { expect } = require('chai');
 const { describe, it } = require('mocha');
+const vm = require('vm');
 const { unduck, DuckError } = require('../index.js');
 
 describe('unduck', () => {
@@ -239,11 +240,24 @@ describe('unduck', () => {
   });
   it('__proto__ on obj', () => {
     const ud = unduck.withTypes(dateType);
-    const proto = {};
+    const proto = Object.create(null);
     const pojo = { type: 'Date', millis, '__proto__': proto };
     const unducked = ud(pojo);
     expect(Object.getPrototypeOf(unducked)).to.equal(Date.prototype);
     expect(Object.hasOwnProperty.call(unducked, '__proto__')).to.equal(false);
+  });
+  it('array and object cross realm', () => {
+    const ud = unduck.withTypes(dateType);
+    const pojoCrossRealm =
+      new vm.Script(`([{ type: 'Date', millis: ${ millis } }])`)
+        .runInNewContext();
+    // Check that it really is cross realm.
+    expect(Array.isArray(pojoCrossRealm)).to.equal(true);
+    expect(pojoCrossRealm instanceof Array).to.equal(false);
+    // Check that we processed and got a this-realm Date.
+    const result = ud(pojoCrossRealm);
+    expect(result instanceof Array).to.equal(true);
+    expect(result[0] instanceof Date).to.equal(true);
   });
   it('symbols', () => {
     const millisSymbol = Symbol('millis');
@@ -428,18 +442,8 @@ describe('unduck', () => {
           'duckTypes': [ 'Point' ],
         },
         'valueMap': {
-          'Date': {
-            'count': 2,
-            'key': 'millis',
-            'have': { 'count': 1, 'duckTypes': [ 'Date' ] },
-            'haveNot': { 'count': 1, 'duckTypes': [ 'Point' ] },
-          },
-          'Thing': {
-            'count': 2,
-            'key': 'y',
-            'have': { 'count': 1, 'duckTypes': [ 'Point' ] },
-            'haveNot': { 'count': 1, 'duckTypes': [ 'Thing' ] },
-          },
+          'Date': { 'count': 1, 'duckTypes': [ 'Date' ] },
+          'Thing': { 'count': 1, 'duckTypes': [ 'Thing' ] },
         },
       });
     });
@@ -970,6 +974,232 @@ describe('unduck', () => {
           'ArithOperator: MissingDuckError: Failed to compute constructor arguments for ArithOperator',
           'StrOperator: MissingDuckError: Failed to compute constructor arguments for StrOperator',
         ].join('\n'));
+    });
+  });
+  describe('mixed content', () => {
+    class ContentChunk {
+      constructor(text) {
+        this.text = text;
+      }
+
+      toString() {
+        return `(${ this.constructor.name } ${ JSON.stringify(this.text) })`;
+      }
+
+      // eslint-disable-next-line class-methods-use-this, no-unused-vars
+      update(container) {
+        throw new Error('implement me');
+      }
+    }
+
+    class PlainText extends ContentChunk {
+      update(container) {
+        container.textContent = this.text;
+      }
+    }
+
+    class Html extends ContentChunk {
+      update(container) {
+        // Danger
+        container.innerHTML = this.text;
+      }
+    }
+
+    class Comments {
+      constructor(comments) {
+        this.comments = [ ...comments ];
+      }
+
+      toString() {
+        return this.comments.join('\n');
+      }
+    }
+
+    const ud = unduck.withTypes(
+      {
+        classType: Comments,
+        toConstructorArguments({ comments }) {
+          return [ comments ];
+        },
+        properties: {
+          comments: { type: Array },
+        },
+      },
+      {
+        classType: PlainText,
+        toConstructorArguments({ text }) {
+          return [ text ];
+        },
+        properties: {
+          type: { value: 'text/plain', required: false },
+          text: { type: 'string' },
+        },
+      },
+      {
+        classType: Html,
+        toConstructorArguments({ text }) {
+          return [ text ];
+        },
+        properties: {
+          type: { value: 'text/html' },
+          text: {
+            type: 'string',
+            innocuous: 'Elided',
+            // By Html.update above
+            trusted: true,
+          },
+        },
+      },
+    );
+
+    const comment0 = { text: 'Be <b>nice</b>, Management!', type: 'text/html' };
+    const comment1 = { text: 'Hello' };
+    const comment2 = { text: 'World!', type: 'text/plain' };
+
+    const attackerControlledString =
+      '{ "text": "<script>alert(1)</script>", "type": "text/html" }';
+
+    const expected = [
+      '(Html "Be <b>nice</b>, Management!")',
+      '(PlainText "Hello")',
+      '(PlainText "World!")',
+      '(Html "Elided")',
+    ].join('\n');
+
+    it('dtree', () => {
+      expect(ud._diagnostic()).to.deep.equal({
+        'count': 3,
+        'key': 'type',
+        'have': { 'count': 0, 'duckTypes': [] },
+        'haveNot': {
+          'count': 2,
+          'key': 'comments',
+          'have': { 'count': 1, 'duckTypes': [ 'Comments' ] },
+          'haveNot': { 'count': 1, 'duckTypes': [ 'PlainText' ] },
+        },
+        'valueMap': {
+          'text/html': { 'count': 1, 'duckTypes': [ 'Html' ] },
+          'text/plain': { 'count': 1, 'duckTypes': [ 'PlainText' ] },
+        },
+      });
+    });
+    it('trust nested within untrust', () => {
+      const unducked = ud({
+        comments: [
+          ud.trust(comment0), comment1, comment2,
+          JSON.parse(attackerControlledString),
+        ],
+      });
+      expect(unducked.toString()).to.equal(expected);
+    });
+    it('untrust nested within trust', () => {
+      const unducked = ud.trust({
+        comments: [
+          comment0, comment1, comment2,
+          ud(JSON.parse(attackerControlledString)),
+        ],
+      });
+      expect(unducked.toString()).to.equal(expected);
+    });
+    it('nest explicit class value', () => {
+      const unducked = ud({
+        comments: [
+          new Html(comment0.text), comment1, comment2,
+          JSON.parse(attackerControlledString),
+        ],
+      });
+      expect(unducked.toString()).to.equal(expected);
+    });
+  });
+  describe('special value ambiguity', () => {
+    class LabeledObject {
+      constructor(label, x) {
+        this.label = label;
+        this.x = x;
+      }
+    }
+
+    function makeToConstructorArguments(label) {
+      return function toConstructorArguments(x) {
+        return [ label, x ];
+      };
+    }
+
+    // Define a highly specific value switch and then make sure
+    // that that property still works in a type that does not
+    // require any specific value.
+    const ud = unduck.withTypes(
+      {
+        classType: class TypeA extends LabeledObject {},
+        toConstructorArguments: makeToConstructorArguments('A'),
+        properties: {
+          x: { value: 'a' },
+        },
+      },
+      {
+        classType: class TypeB extends LabeledObject {},
+        toConstructorArguments: makeToConstructorArguments('B'),
+        properties: {
+          x: { value: 'b' },
+        },
+      },
+      {
+        classType: class TypeC extends LabeledObject {},
+        toConstructorArguments: makeToConstructorArguments('C'),
+        properties: {
+          x: { value: 'c' },
+        },
+      },
+      {
+        classType: class TypeD extends LabeledObject {},
+        toConstructorArguments: makeToConstructorArguments('D'),
+        properties: {
+          x: { value: 'd' },
+        },
+      },
+      {
+        classType: class TypeE extends LabeledObject {},
+        toConstructorArguments: makeToConstructorArguments('E'),
+        properties: {
+          x: { default: 'e' },
+          y: { },
+        },
+      },
+    );
+
+    it('dtree', () => {
+      function just(name) {
+        return { count: 1, duckTypes: [ name ] };
+      }
+      expect(ud._diagnostic()).to.deep.equal({
+        count: 5,
+        key: 'x',
+        valueMap: {
+          'a': { count: 2, key: 'y', have: just('TypeE'), haveNot: just('TypeA') },
+          'b': { count: 2, key: 'y', have: just('TypeE'), haveNot: just('TypeB') },
+          'c': { count: 2, key: 'y', have: just('TypeE'), haveNot: just('TypeC') },
+          'd': { count: 2, key: 'y', have: just('TypeE'), haveNot: just('TypeD') },
+        },
+        have: just('TypeE'),
+        haveNot: just('TypeE'),
+      });
+    });
+    it('a-d no y', () => {
+      expect(ud({ x: 'a' }).label).to.equal('A');
+      expect(ud({ x: 'b' }).label).to.equal('B');
+      expect(ud({ x: 'c' }).label).to.equal('C');
+      expect(ud({ x: 'd' }).label).to.equal('D');
+    });
+    it('a-d with y', () => {
+      expect(ud({ x: 'a', y: 0 }).label).to.equal('E');
+      expect(ud({ x: 'b', y: 0 }).label).to.equal('E');
+      expect(ud({ x: 'c', y: 0 }).label).to.equal('E');
+      expect(ud({ x: 'd', y: 0 }).label).to.equal('E');
+    });
+    it('not a-d', () => {
+      expect(ud({ x: 'e', y: 0 }).label).to.equal('E');
+      expect(ud({ x: 'f', y: 0 }).label).to.equal('E');
+      expect(ud({ y: 0 }).label).to.equal('E');
     });
   });
 });

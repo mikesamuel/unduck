@@ -24,10 +24,13 @@ const {
   assign,
   getOwnPropertyNames,
   getOwnPropertySymbols,
+  getPrototypeOf,
   setPrototypeOf,
 } = Object;
 
 const hasOwn = Function.prototype.call.bind(Object.hasOwnProperty);
+
+const objProto = getPrototypeOf({});
 
 /** A breadcrumb used to identify object graph cycles. */
 const IN_PROGRESS_BREADCRUMB = {};
@@ -75,6 +78,17 @@ function processor(trusted, root, userContext) {
       return x;
     }
 
+    // Don't muck with class instances.
+    // We treat anything that has a null prototype, a prototype that is an
+    // object, or a prototype that (like Objects from other realms) has a
+    // null prototype.
+    let xIsArray = false;
+    const proto = getPrototypeOf(x);
+    if (proto && proto !== objProto && getPrototypeOf(proto) !== null &&
+        !(xIsArray = isArray(x))) {
+      return x;
+    }
+
     // Handle non-tree-like object-graphs including cycles.
     if (unduckingMap.has(x)) {
       const processed = unduckingMap.get(x);
@@ -86,7 +100,7 @@ function processor(trusted, root, userContext) {
     unduckingMap.set(x, IN_PROGRESS_BREADCRUMB);
 
     let result = null;
-    if (isArray(x)) {
+    if (xIsArray) {
       // eslint-disable-next-line no-use-before-define
       result = processArray(x);
     } else {
@@ -545,7 +559,7 @@ class DTree {
         this.valueMap = new Map();
         for (const [ k, ts ] of valueMap) {
           this.valueMap.set(
-            k, new DTree(ts.concat(haveNot), used, this));
+            k, new DTree(ts.concat(haveWithoutSpecialValue), used, this));
         }
       }
       used.delete(partitionKey);
@@ -570,7 +584,7 @@ class DTree {
   }
 
   /**
-   *
+   * Finds the leaf node most applicable to x.
    */
   duckHunt(x) {
     // Loop from unrolling tail calls.
