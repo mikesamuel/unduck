@@ -105,7 +105,7 @@ that merges, combines, or uses properties.
 
 Hereafter, "duck type" refers to these informal types.  Note: this is a
 narrower definition than readers may be familiar with: a type
-defined based on the properties and methods it provides insetad of
+defined based on the properties and methods it provides instead of
 the constructor used to create values or prototypes.
 
 TypeScript lets us bring duck types into the type system with [index
@@ -132,11 +132,12 @@ interface TypedContent {
 ```
 
 Given a description like this, TypeScript can look at
-`let x: T = { key: value }` expression and decide whether
+`let x: T = { key: value }` and decide whether
 `{ key: value }` is really a `T`.
 
-Switching to typescript is not easy though, nor is adding
-the right `: T` to every creation of an *Object* via `{ ... }`.
+Converting existing projects to TypeScript is not trivial though, nor
+is adding the right `: T` to every creation of an *Object* via `{
+... }`.
 
 The rest of this document explains how an operator, tentatively
 called *unduck*, might:
