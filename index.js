@@ -17,7 +17,7 @@
 
 'use strict';
 
-/* eslint id-length: ["error", { "exceptions": ["i", "n", "x"] }] */
+/* eslint id-length: ["error", { "exceptions": ["i", "j", "n", "x"] }] */
 
 const { isArray } = Array;
 const {
@@ -34,6 +34,17 @@ const objProto = getPrototypeOf({});
 
 /** A breadcrumb used to identify object graph cycles. */
 const IN_PROGRESS_BREADCRUMB = {};
+
+const blankSymbols = (() => {
+  // TODO: Might this accidentally load no-object-forgery
+  // during tsts when its only a test dependency?
+  try {
+    require('no-object-forgery'); // eslint-disable-line global-require
+  } catch (ex) {
+    // optional dependency
+  }
+  return new Set(getOwnPropertySymbols(JSON.parse('{}')));
+})();
 
 /**
  * Thrown when there is a problem inferring a class type for
@@ -118,26 +129,30 @@ function processor(trusted, root, userContext) {
    *    Null means no-op.
    * @param failFast true to propagate errors up aggressively since there
    *    is no failover.
+   * @param {!Array<!Array<string | !Symbol>>} keyLists string and symbol keys of unchained
    * @return null on failure, or an argument suitable for toConstructorArguments.
    */
-  function applyOneDuckType(duckType, unchained, report, failFast) {
-    const scratchSpace = assign(setPrototypeOf({}, null), unchained);
+  function applyOneDuckType(duckType, unchained, report, failFast, keyLists) {
     const { properties, requiredKeys } = duckType;
     // Check that all properties are allowed.
-    for (const key in scratchSpace) {
-      if (!(key in properties)) {
-        if (report) {
-          report(
-            duckType,
-            new MissingDuckError(
-              `Duck type ${ duckType.classType.name } does not allow key ${ key }`));
+    for (let j = 0; j < 2; ++j) {
+      const keyList = keyLists[j];
+      for (let i = 0, n = keyList.length; i < n; ++i) {
+        const key = keyList[i];
+        if (!(key in properties) && !blankSymbols.has(key)) {
+          if (report) {
+            report(
+              duckType,
+              new MissingDuckError(
+                `Duck type ${ duckType.classType.name } does not allow key ${ key.toString() }`));
+          }
+          return null;
         }
-        return null;
       }
     }
     for (let i = 0, n = requiredKeys.length; i < n; ++i) {
       const key = requiredKeys[i];
-      if (!(key in scratchSpace)) {
+      if (!(key in unchained)) {
         if (report) {
           report(
             duckType,
@@ -148,7 +163,9 @@ function processor(trusted, root, userContext) {
         return null;
       }
     }
-    // required values enforced in convert.  TODO: maybe reconsider this
+    // required values enforced during convert.  TODO: maybe reconsider this
+
+    const scratchSpace = assign(setPrototypeOf({}, null), unchained);
 
     // Compute recursive field values before trying to convert to
     // constructor arguments.
@@ -217,8 +234,9 @@ function processor(trusted, root, userContext) {
    * @param {!DTree} node
    * @param {!Object} unchained bag with same property values as the input but no prototype.
    * @param {boolean} collectErrorTrace true to generate a nice error message.
+   * @param {!Array<!Array<string | !Symbol>>} keyLists string and symbol keys of unchained
    */
-  function tentativelyApplyDuckTypes(node, unchained, collectErrorTrace) {
+  function tentativelyApplyDuckTypes(node, unchained, collectErrorTrace, keyLists) {
     let applicableDuckType = null;
     let applicableConstructorArgs = null;
 
@@ -245,7 +263,7 @@ function processor(trusted, root, userContext) {
     // We need to rollback changes to unchained if there are multiple
     // competing types.
     for (const duckType of node.types()) {
-      const scratchSpace = applyOneDuckType(duckType, unchained, report, failFast);
+      const scratchSpace = applyOneDuckType(duckType, unchained, report, failFast, keyLists);
       if (!scratchSpace) {
         continue;
       }
@@ -313,9 +331,8 @@ function processor(trusted, root, userContext) {
   function processPojo(x) {
     // Use a temporary object so we don't multiply read fields.
     const unchained = setPrototypeOf({}, null);
-    for (let stringKeys = getOwnPropertyNames(x),
-      i = 0, n = stringKeys.length;
-      i < n; ++i) {
+    const stringKeys = getOwnPropertyNames(x);
+    for (let i = 0, n = stringKeys.length; i < n; ++i) {
       const key = stringKeys[i];
       if (key !== '__proto__') {
         // HACK: could fall back to Object.defineProperty
@@ -323,17 +340,17 @@ function processor(trusted, root, userContext) {
         unchained[key] = x[key];
       }
     }
-    for (let symbolKeys = getOwnPropertySymbols(x),
-      i = 0, n = symbolKeys.length;
-      i < n; ++i) {
+    const symbolKeys = getOwnPropertySymbols(x);
+    for (let i = 0, n = symbolKeys.length; i < n; ++i) {
       const key = symbolKeys[i];
       unchained[key] = x[key];
     }
+    const keyLists = [ stringKeys, symbolKeys ];
 
     const node = root.duckHunt(unchained);
     const { applicableConstructorArgs, applicableDuckType } =
       // Try without collecting error trace.
-      tentativelyApplyDuckTypes(node, unchained, false);
+      tentativelyApplyDuckTypes(node, unchained, false, keyLists);
     if (!applicableConstructorArgs) {
       // TODO: map node.types() to type names.
       // TODO: use suppressed errors.
@@ -343,7 +360,7 @@ function processor(trusted, root, userContext) {
           if (this.errorMessage === null) {
             // Redo with the extra work to collect error trace.
             const { errorMessage } = tentativelyApplyDuckTypes(
-              node, unchained, true);
+              node, unchained, true, keyLists);
             this.errorMessage = errorMessage ||
               `Failed to compute constructor arguments for [${
                 Array.from(node.types()).map((duckType) => duckType.classType.name)
@@ -598,6 +615,7 @@ class DTree {
       const { mayHaveMap } = node;
       if (mayHaveMap) {
         node = node.haveNone;
+        // TODO: thread symbol keys through to here
         for (const key in x) {
           const next = mayHaveMap.get(key);
           if (next) {

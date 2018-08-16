@@ -282,6 +282,12 @@ describe('unduck', () => {
     expect(unducked instanceof Date).to.equal(true);
     expect(Number(unducked)).to.equal(millis);
   });
+  it('unexpected symbol', () => {
+    const ud = unduck.withTypes(dateType);
+    const symbol = Symbol('s');
+    const pojo = { type: 'Date', millis: 1234, [symbol]: true };
+    expect(() => ud(pojo)).to.throw(DuckError, 'Duck type Date does not allow key Symbol(s)');
+  });
   it('string type mismatch', () => {
     const ud = unduck.withTypes(dateType);
     const pojo = { type: 'Date', millis: '1234' };

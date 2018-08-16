@@ -23,6 +23,9 @@
   },
   "homepage": "https://github.com/mikesamuel/ducks#readme",
   "dependencies": {},
+  "optionalDependencies": {
+    "no-object-forgery": "^1.0.1"
+  },
   "devDependencies": {
     "chai": "^4.1.2",
     "coveralls": "^3.0.0",
@@ -61,7 +64,7 @@
       "complexity": [
         "error",
         {
-          "max": 20
+          "max": 21
         }
       ],
       "id-match": 0,
