@@ -104,9 +104,8 @@ that merges, combines, or uses properties.
 ### Duck typing
 
 Hereafter, "duck type" refers to these informal types.  Note: this is a
-narrower definition than readers may be familiar with: a type
-defined based on the properties and methods it provides instead of
-the constructor used to create values or prototypes.
+narrower definition than readers may be familiar with:
+[structural typing][] but without formally defined "structure."
 
 TypeScript lets us bring duck types into the type system with [index
 types][] and [literal types][].
@@ -365,3 +364,4 @@ As noted before, without rewriting code to call the appropriate
 [trust boundary]: https://en.wikipedia.org/wiki/Trust_boundary
 [sanitize-html]: https://www.npmjs.com/package/sanitize-html
 [hapi]: https://hapijs.com/
+[structural typing]: https://en.wikipedia.org/wiki/Structural_type_system
