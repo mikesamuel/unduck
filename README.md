@@ -308,16 +308,18 @@ object.  "[JSON object forgery][]" (mentioned previously) explains why not.
 > JSON.parse makes it easy to unintentionally turn untrustworthy
 > strings into untrustworthy objects.
 
-If a duck property descriptor includes a
-`toSafeValue(value, notApplicable)` method, then that can convert
+A duck property descriptor's optional `convert` method can convert
 values from outside a [trust boundary][] to ones suitable to use
-inside a trust boundary.  This could apply sanitizers, restrict to
-plain strings instead of recursing, or not upgrade to a [contract type][]:
+inside a trust boundary if it knows whether the author considers the
+input trustworthy.  This could apply sanitizers, restrict to
+plain strings instead of recursing, or just not upgrade to a [contract type][]:
 
-There are two patterns that might provide an easily auditable
+There are two patterns that might make it easy to audit decisions about whether
+an object is trustworthy.
 
-&#x1F425;.&#x2622; (read danger duck) could indicate that an input is dangerous.  Alternatively,
-&#x1F425;.&#x262e; (read peace duck) could indicate that the author trusts the input.
+*  &#x1F425;.&#x2622; (read danger duck) could indicate that an input is dangerous.
+*  Alternatively, &#x1F425;.&#x262e; (read peace duck) could indicate that the
+   author trusts the input.
 
 The latter makes the easiest to type default to safe which is preferable.
 Either, if named consistently, make it easy to enumerate calls that might need auditing.
@@ -335,6 +337,12 @@ Either, if named consistently, make it easy to enumerate calls that might need a
   🐥(JSON.parse(untrustedString))
 ]
 ```
+
+This replaces one intractable problem, locally reasoning about the structure of external inputs,
+with two simpler ones.  The author of this code does not need to reason about the content of
+`untrustedString`.  A type author can specify one conversion to ferry safe values inside the
+trust boundary, and the author of the code above only needs to reason about which variables
+originate inside the trust boundary.
 
 ## Duck Migration
 
