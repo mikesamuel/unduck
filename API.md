@@ -18,7 +18,7 @@ Unduck is available via ([![npm](https://img.shields.io/npm/v/unduck.svg)](https
         *  [`innocuous`](#prop-innocuous)
         *  [`convert(...)`](#prop-convert)
 *  [The `unduck` function](#unduck-fn)
-    *  [`.withTypes(...typeDescriptors`](#unduck-with)
+    *  [`.withTypes(...typeDescriptors)`](#unduck-with)
     *  [`.trust(...)`](#unduck-trust)
 
 ```js
@@ -206,7 +206,7 @@ and after and only after the value passes any `type` check.
 
 ## The `unduck` function  <span name="unduck-fn"></span>
 
-### `.withTypes(...typeDescriptors`  <span name="unduck-with"></span>
+### `.withTypes(...typeDescriptors)`  <span name="unduck-with"></span>
 
 `const unduck = require('unduck')` brings an unduck function into scope
 that has zero duck types.
